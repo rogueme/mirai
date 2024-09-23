@@ -46,3 +46,10 @@ keys.properties
 token.txt
 bintray.user.txt
 bintray.key.txt
+
+# For gpg sign
+/build-gpg-sign
+# Name for IDEA direction sorting
+build-secret-keys/
+
+**/local.*

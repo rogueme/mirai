@@ -1,132 +1,192 @@
+/*
+ * Copyright 2019-2023 Mamoe Technologies and contributors.
+ *
+ * 此源代码的使用受 GNU AFFERO GENERAL PUBLIC LICENSE version 3 许可证的约束, 可以在以下链接找到该许可证.
+ * Use of this source code is governed by the GNU AGPLv3 license that can be found through the following link.
+ *
+ * https://github.com/mamoe/mirai/blob/dev/LICENSE
+ */
+
 @file:Suppress("UNUSED_VARIABLE")
+
+import BinaryCompatibilityConfigurator.configureBinaryValidators
+import shadow.relocateCompileOnly
+import shadow.relocateImplementation
 
 plugins {
     kotlin("multiplatform")
     id("kotlinx-atomicfu")
     kotlin("plugin.serialization")
-    id("signing")
+    id("me.him188.kotlin-jvm-blocking-bridge")
+    id("me.him188.kotlin-dynamic-delegation")
+//    id("me.him188.maven-central-publish")
     `maven-publish`
-    id("com.jfrog.bintray") version Versions.Publishing.bintray
 }
 
-description = "Mirai API module"
-
-val isAndroidSDKAvailable: Boolean by project
+description = "Mirai Protocol implementation for QQ Android"
 
 kotlin {
     explicitApi()
+    apply(plugin = "explicit-api")
 
-    if (isAndroidSDKAvailable) {
-        apply(from = rootProject.file("gradle/android.gradle"))
-        android("android") {
-            publishAllLibraryVariants()
-        }
-    } else {
-        println(
-            """Android SDK 可能未安装.
-                $name 的 Android 目标编译将不会进行. 
-                这不会影响 Android 以外的平台的编译.
-            """.trimIndent()
-        )
-        println(
-            """Android SDK might not be installed.
-                Android target of $name will not be compiled. 
-                It does no influence on the compilation of other platforms.
-            """.trimIndent()
-        )
-    }
+    configureJvmTargetsHierarchical("net.mamoe.mirai.internal")
 
-    jvm() {
-        // withJava() // https://youtrack.jetbrains.com/issue/KT-39991
-    }
+    optInForAllSourceSets("net.mamoe.mirai.utils.MiraiExperimentalApi")
+    optInForAllSourceSets("net.mamoe.mirai.utils.MiraiInternalApi")
+    optInForAllSourceSets("net.mamoe.mirai.LowLevelApi")
+    optInForAllSourceSets("kotlinx.serialization.ExperimentalSerializationApi")
 
     sourceSets.apply {
-        all {
-            languageSettings.enableLanguageFeature("InlineClasses")
-            languageSettings.useExperimentalAnnotation("kotlin.Experimental")
-            languageSettings.useExperimentalAnnotation("net.mamoe.mirai.utils.MiraiInternalAPI")
-            languageSettings.useExperimentalAnnotation("net.mamoe.mirai.utils.MiraiExperimentalAPI")
-            languageSettings.useExperimentalAnnotation("net.mamoe.mirai.LowLevelAPI")
-            languageSettings.useExperimentalAnnotation("kotlin.ExperimentalUnsignedTypes")
-            languageSettings.useExperimentalAnnotation("kotlin.experimental.ExperimentalTypeInference")
-            languageSettings.useExperimentalAnnotation("kotlin.time.ExperimentalTime")
-            languageSettings.useExperimentalAnnotation("kotlin.contracts.ExperimentalContracts")
-
-            languageSettings.progressiveMode = true
-        }
 
         val commonMain by getting {
             dependencies {
-                api(kotlin("serialization"))
-                api(kotlin("reflect"))
+                api(project(":mirai-core-api"))
+                api(`kotlinx-serialization-core`)
+                api(`kotlinx-serialization-json`)
+                api(`kotlinx-coroutines-core`)
 
-                api(kotlinx("serialization-runtime", Versions.Kotlin.serialization))
-                implementation(kotlinx("serialization-protobuf", Versions.Kotlin.serialization))
-                implementation(kotlinx("io", Versions.Kotlin.io))
-                implementation(kotlinx("coroutines-io", Versions.Kotlin.coroutinesIo))
-                api(kotlinx("coroutines-core", Versions.Kotlin.coroutines))
+                implementation(`kt-bignum`)
+                implementation(project(":mirai-core-utils"))
+                implementation(`kotlinx-serialization-protobuf`)
+                implementation(`kotlinx-atomicfu`)
 
-                implementation("org.jetbrains.kotlinx:atomicfu:${Versions.Kotlin.atomicFU}")
+                // runtime from mirai-core-utils
+                relocateCompileOnly(`ktor-io_relocated`)
 
-                api(ktor("client-cio"))
-                api(ktor("client-core"))
-                api(ktor("network"))
+//                relocateImplementation(`ktor-http_relocated`)
+//                relocateImplementation(`ktor-serialization_relocated`)
+//                relocateImplementation(`ktor-websocket-serialization_relocated`)
             }
         }
 
         commonTest {
             dependencies {
-                implementation(kotlin("test-annotations-common"))
-                implementation(kotlin("test-common"))
+                implementation(kotlin("script-runtime"))
+                implementation(`kotlinx-coroutines-test`)
+                api(yamlkt)
+                api(`junit-jupiter-api`)
             }
         }
 
-        if (isAndroidSDKAvailable) {
-            val androidMain by getting {
-                dependencies {
-                    api(kotlin("reflect"))
+        findByName("jvmBaseMain")?.apply {
+            dependencies {
+                implementation(`log4j-api`)
+                implementation(`netty-handler`)
+                api(`kotlinx-coroutines-jdk8`) // use -jvm modules for this magic target 'jvmBase'
+            }
+        }
 
-                    implementation(kotlinx("io-jvm", Versions.Kotlin.io))
-                    implementation(kotlinx("coroutines-io-jvm", Versions.Kotlin.coroutinesIo))
+        findByName("jvmBaseTest")?.apply {
+            dependencies {
+                implementation(`kotlinx-coroutines-debug`)
+            }
+        }
 
-                    api(ktor("client-android", Versions.Kotlin.ktor))
+        findByName("androidMain")?.apply {
+            dependencies {
+                if (rootProject.property("mirai.android.target.api.level")!!.toString().toInt() < 23) {
+                    // Ship with BC if we are targeting 23 or lower where AndroidKeyStore is not stable enough.
+                    // For more info, read `net.mamoe.mirai.internal.utils.crypto.EcdhAndroidKt.create` in `androidMain`.
+                    implementation(bouncycastle)
                 }
             }
-
-            val androidTest by getting {
-                dependencies {
-                    implementation(kotlin("test"))
-                    implementation(kotlin("test-junit"))
-                    implementation(kotlin("test-annotations-common"))
-                    implementation(kotlin("test-common"))
-                }
-            }
         }
 
-        val jvmMain by getting {
+        // For Android with JDK
+        findByName("androidTest")?.apply {
             dependencies {
-                //api(kotlin("stdlib-jdk8"))
-                //api(kotlin("stdlib-jdk7"))
-                api(kotlin("reflect"))
-
-                api(ktor("client-core-jvm", Versions.Kotlin.ktor))
-                implementation(kotlinx("io-jvm", Versions.Kotlin.io))
-                implementation(kotlinx("coroutines-io-jvm", Versions.Kotlin.coroutinesIo))
-
-                runtimeOnly(files("build/classes/kotlin/jvm/main")) // classpath is not properly set by IDE
+                implementation(bouncycastle)
             }
         }
-
-        val jvmTest by getting {
+        // For Android with SDK
+        findByName("androidUnitTest")?.apply {
             dependencies {
-                implementation(kotlin("test"))
-                implementation(kotlin("test-junit"))
-                implementation("org.pcap4j:pcap4j-distribution:1.8.2")
-
-                runtimeOnly(files("build/classes/kotlin/jvm/test")) // classpath is not properly set by IDE
+                implementation(bouncycastle)
             }
         }
+
+        findByName("jvmMain")?.apply {
+            dependencies {
+                implementation(bouncycastle)
+                // api(kotlinx("coroutines-debug", Versions.coroutines))
+            }
+        }
+
+        findByName("jvmTest")?.apply {
+            dependencies {
+                api(`kotlinx-coroutines-debug`)
+                //  implementation("net.mamoe:mirai-login-solver-selenium:1.0-dev-14")
+            }
+        }
+
+
+        // Kt bignum
+        findByName("jvmBaseMain")?.apply {
+            dependencies {
+                relocateImplementation(`kt-bignum_relocated`)
+            }
+        }
+
+
+        // Ktor
+        findByName("commonMain")?.apply {
+            dependencies {
+                compileOnly(`ktor-io`)
+                implementation(`ktor-client-core`)
+            }
+        }
+        findByName("jvmBaseMain")?.apply {
+            // relocate for JVM like modules
+            dependencies {
+                relocateCompileOnly(`ktor-io_relocated`) // runtime from mirai-core-utils
+                relocateImplementation(`ktor-client-core_relocated`)
+            }
+        }
+        findByName("jvmBaseMain")?.apply {
+            dependencies {
+                relocateImplementation(`ktor-client-okhttp_relocated`)
+            }
+        }
+
     }
 }
 
-apply(from = rootProject.file("gradle/publish.gradle"))
+atomicfu {
+    transformJvm = false
+}
+
+if (tasks.findByName("androidMainClasses") != null) {
+    tasks.register("checkAndroidApiLevel") {
+        doFirst {
+            analyzes.AndroidApiLevelCheck.check(
+                buildDir.resolve("classes/kotlin/android/main"),
+                project.property("mirai.android.target.api.level")!!.toString().toInt(),
+                project
+            )
+        }
+        group = "verification"
+        this.mustRunAfter("androidMainClasses")
+    }
+    tasks.findByName("androidTest")?.dependsOn("checkAndroidApiLevel")
+}
+
+configureMppPublishing()
+configureBinaryValidators(setOf("jvm", "android").filterTargets())
+
+tasks.register("compileJava") {
+    description = "Dummy task to allow IntelliJ IDEA to run main functions from jvmTest"
+    dependsOn(tasks.getByName("compileKotlinJvm"))
+}
+
+tasks.register("testClasses") {
+    description = "Dummy task to allow IntelliJ IDEA to run main functions from jvmTest"
+    dependsOn(tasks.getByName("compileTestKotlinJvm"))
+}
+
+//mavenCentralPublish {
+//    artifactId = "mirai-core"
+//    githubProject("mamoe", "mirai")
+//    developer("Mamoe Technologies", email = "support@mamoe.net", url = "https://github.com/mamoe")
+//    licenseFromGitHubProject("AGPLv3", "dev")
+//    publishPlatformArtifactsInRootModule = "jvm"
+//}
